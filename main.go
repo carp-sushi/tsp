@@ -40,7 +40,7 @@ type Population struct {
 	solutions []*Tour
 }
 
-// Run competing GA go-routines until either one minute has passed or an ideal score is found.
+// Run competing GA go-routines until either 30s have passed or an ideal score is found.
 func main() {
 
 	rand.Seed(time.Now().UnixNano())
@@ -272,7 +272,7 @@ func GeneticTSP(wg *sync.WaitGroup, size, offspring int, tours chan *Tour, quit 
 		case tours <- p.Best():
 			p.Evolve(offspring)
 		case <-quit:
-			fmt.Println("Quit signal received")
+			// fmt.Println("Quit signal received")
 			wg.Done()
 			return
 		}
