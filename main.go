@@ -3,9 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"math/rand"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,37 +28,34 @@ type City struct {
 
 // Tour is a path through all cities (a possible solution).
 type Tour struct {
-	path []*City
+	path []City
 }
 
 // Genotype is the search space (the non optimized list of cities).
 type Genotype struct {
-	genes []*City
+	genes []City
 }
 
 // Population is a collection of tours to optimize.
 type Population struct {
-	solutions []*Tour
+	solutions []Tour
 }
 
-// Run competing GA go-routines until either 30s have passed or an ideal score is found.
+// Run competing GA go-routines to find a "good enough" solution to the TSP.
 func main() {
-
-	rand.Seed(time.Now().UnixNano())
-
 	var wg sync.WaitGroup
-	size, offspring := 1000, 100
-	tours := make(chan *Tour)
+	size, offspring := 100, 10
+	tours := make(chan Tour)
 	quit := make(chan int)
 
 	// Start our GA routines
-	nThreads := 8
-	for i := 0; i < nThreads; i++ {
+	nThreads := max(2, runtime.NumCPU()/2+1)
+	for range nThreads {
 		wg.Add(1)
 		go GeneticTSP(&wg, size, offspring, tours, quit)
 	}
 
-	// Listen for solutions and print the best found so far
+	// Collect solutions and print the best found
 	go func() {
 		bestScore := math.MaxFloat64
 		for tour := range tours {
@@ -70,15 +68,17 @@ func main() {
 		}
 	}()
 
-	// Run for 30 seconds
-	<-time.After(30 * time.Second)
-	fmt.Println("Timeout reached")
-	for i := 0; i < nThreads; i++ {
-		quit <- 0
-	}
+	// Terminates TSP go-routines after 10 seconds
+	go func() {
+		<-time.After(10 * time.Second)
+		fmt.Println("Timeout")
+		close(quit)
+	}()
 
 	// Wait for completion
 	wg.Wait()
+	close(tours)
+	fmt.Println("Exit")
 }
 
 // Return two random values between zero and a given integer.
@@ -94,7 +94,7 @@ func randRange(n int) (int, int) {
 }
 
 // Great circle distance algorithm
-func distance(c0, c1 *City) float64 {
+func distance(c0, c1 City) float64 {
 	lat0, lon0 := c0.Lat, c0.Lon
 	lat1, lon1 := c1.Lat, c1.Lon
 	p0 := lat0 * piRads
@@ -106,32 +106,39 @@ func distance(c0, c1 *City) float64 {
 }
 
 // Create a city from an array of strings.
-func initCity(fields []string) (city *City, err error) {
+func initCity(fields []string) (city City, err error) {
 	if len(fields) != 3 {
 		err = errors.New("Invalid line format")
 		return
 	}
-	city = &City{}
-	city.Name = strings.TrimSpace(fields[0])
-	city.Lat, err = strconv.ParseFloat(fields[1], 64)
+	name := strings.TrimSpace(fields[0])
+	var lat float64
+	lat, err = strconv.ParseFloat(fields[1], 64)
 	if err != nil {
 		return
 	}
-	city.Lon, err = strconv.ParseFloat(fields[2], 64)
-	return
+	var lon float64
+	lon, err = strconv.ParseFloat(fields[2], 64)
+	if err != nil {
+		return
+	}
+	return City{name, lat, lon}, nil
+}
+
+// Copy clones a city
+func (c City) Copy() City {
+	return City{c.Name, c.Lat, c.Lon}
 }
 
 // Shuffle creates a randomized tour.
 func (t *Tour) Shuffle() {
-	n := len(t.path)
-	for i := 0; i < n; i++ {
-		r := rand.Intn(n)
-		t.path[i], t.path[r] = t.path[r], t.path[i]
-	}
+	rand.Shuffle(len(t.path), func(i, j int) {
+		t.path[i], t.path[j] = t.path[j], t.path[i]
+	})
 }
 
 // Print writes a string version of a tour to stdout.
-func (t *Tour) Print() {
+func (t Tour) Print() {
 	for _, city := range t.path {
 		fmt.Printf("%s, ", city.Name)
 	}
@@ -139,7 +146,7 @@ func (t *Tour) Print() {
 }
 
 // Contains determines whether a city lies within a given tour.
-func (t *Tour) Contains(city *City) bool {
+func (t Tour) Contains(city City) bool {
 	for _, c := range t.path {
 		if c.Name == city.Name {
 			return true
@@ -160,8 +167,7 @@ func (t *Tour) Mutate() {
 }
 
 // create a new tour at random
-func makeChild(path1, path2 []*City) *Tour {
-	child := &Tour{}
+func makeChild(path1, path2 []City) (child Tour) {
 	n := rand.Intn(len(path1))
 	child.path = append(child.path, path1[:n]...)
 	for _, value := range path2 {
@@ -174,7 +180,7 @@ func makeChild(path1, path2 []*City) *Tour {
 }
 
 // Crossover is the reproduction operator.
-func (t *Tour) Crossover(t2 *Tour) (children []*Tour) {
+func (t Tour) Crossover(t2 Tour) (children []Tour) {
 	if rand.Float32() <= 0.9 {
 		children = append(children, makeChild(t.path, t2.path))
 		children = append(children, makeChild(t2.path, t.path))
@@ -183,10 +189,10 @@ func (t *Tour) Crossover(t2 *Tour) (children []*Tour) {
 }
 
 // Score is the total distance of a tour.
-func (t *Tour) Score() float64 {
+func (t Tour) Score() float64 {
 	n := len(t.path) - 1
 	score := distance(t.path[n], t.path[0])
-	for i := 0; i < n; i++ {
+	for i := range n {
 		score += distance(t.path[i], t.path[i+1])
 	}
 	return score
@@ -194,12 +200,12 @@ func (t *Tour) Score() float64 {
 
 // Init initializes the search space from file.
 func (gt *Genotype) Init(file string) error {
-	rawContent, err := ioutil.ReadFile(file)
+	rawContent, err := os.ReadFile(file)
 	if err != nil {
 		return err
 	}
 	content := strings.TrimSpace(string(rawContent))
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		city, err := initCity(strings.Fields(line))
 		if err != nil {
 			return err
@@ -210,45 +216,45 @@ func (gt *Genotype) Init(file string) error {
 }
 
 // RandomTour creates a random tour from the search space.
-func (gt *Genotype) RandomTour() *Tour {
-	tour := &Tour{}
-	tour.path = append(tour.path, gt.genes...)
+func (gt Genotype) RandomTour() (tour Tour) {
+	tour.path = make([]City, len(gt.genes))
+	for i, gene := range gt.genes {
+		tour.path[i] = gene.Copy()
+	}
 	tour.Shuffle()
-	return tour
+	return
 }
 
 // Init initializes a population of tours.
-func (p *Population) Init(gt *Genotype, size int) {
-	p.solutions = make([]*Tour, size)
-	for i := 0; i < size; i++ {
+func (p *Population) Init(gt Genotype, size int) {
+	p.solutions = make([]Tour, size)
+	for i := range size {
 		p.solutions[i] = gt.RandomTour()
 	}
 }
 
 // Best returns the tour with the shortest path (lowest score).
-func (p *Population) Best() *Tour {
-	best := p.solutions[0]
-	bestScore := best.Score()
-	for i := 1; i < len(p.solutions); i++ {
-		current := p.solutions[i]
+func (p Population) Best() (best Tour) {
+	bestScore := math.MaxFloat64
+	for _, current := range p.solutions {
 		currentScore := current.Score()
 		if currentScore < bestScore {
 			best = current
 			bestScore = currentScore
 		}
 	}
-	return best
+	return
 }
 
 // Select is the selection operator.
-func (p *Population) Select() (*Tour, *Tour) {
+func (p Population) Select() (Tour, Tour) {
 	r1, r2 := randRange(len(p.solutions))
 	return p.solutions[r1], p.solutions[r2]
 }
 
 // Evolve moves the population forward a single generation.
 func (p *Population) Evolve(offspring int) {
-	for i := 0; i < offspring/2; i++ {
+	for range offspring / 2 {
 		p0, p1 := p.Select()
 		for _, child := range p0.Crossover(p1) {
 			i := rand.Intn(len(p.solutions))
@@ -260,19 +266,19 @@ func (p *Population) Evolve(offspring int) {
 }
 
 // GeneticTSP continually evolves a population until a 'quit' signal is received.
-func GeneticTSP(wg *sync.WaitGroup, size, offspring int, tours chan *Tour, quit chan int) {
-	gt := &Genotype{}
+func GeneticTSP(wg *sync.WaitGroup, size, offspring int, tours chan Tour, quit chan int) {
+	gt := Genotype{}
 	if err := gt.Init("capitals.tsp"); err != nil {
 		panic(err)
 	}
-	p := &Population{}
+	p := Population{}
 	p.Init(gt, size)
 	for {
 		select {
 		case tours <- p.Best():
 			p.Evolve(offspring)
 		case <-quit:
-			// fmt.Println("Quit signal received")
+			fmt.Println("Quit go-routine")
 			wg.Done()
 			return
 		}
