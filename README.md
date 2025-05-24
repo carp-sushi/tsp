@@ -1,3 +1,3 @@
-# genetic
+# TSP Solver
 
-TSP genetic algo written in Go
+A travelling salesman problem solver that uses a genetic algorithm.

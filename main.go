@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"math"
@@ -49,8 +50,7 @@ func main() {
 	quit := make(chan int)
 
 	// Start our GA routines
-	nThreads := max(2, runtime.NumCPU()/2+1)
-	for range nThreads {
+	for range max(2, runtime.NumCPU()/2+1) {
 		wg.Add(1)
 		go GeneticTSP(&wg, size, offspring, tours, quit)
 	}
@@ -71,14 +71,13 @@ func main() {
 	// Terminates TSP go-routines after 10 seconds
 	go func() {
 		<-time.After(10 * time.Second)
-		fmt.Println("Timeout")
 		close(quit)
 	}()
 
 	// Wait for completion
 	wg.Wait()
 	close(tours)
-	fmt.Println("Exit")
+	fmt.Println("Done.")
 }
 
 // Return two random values between zero and a given integer.
@@ -200,19 +199,20 @@ func (t Tour) Score() float64 {
 
 // Init initializes the search space from file.
 func (gt *Genotype) Init(file string) error {
-	rawContent, err := os.ReadFile(file)
+	reader, err := os.Open(file)
 	if err != nil {
 		return err
 	}
-	content := strings.TrimSpace(string(rawContent))
-	for line := range strings.SplitSeq(content, "\n") {
-		city, err := initCity(strings.Fields(line))
+	scanner := bufio.NewScanner(reader)
+	scanner.Split(bufio.ScanLines)
+	for scanner.Scan() {
+		city, err := initCity(strings.Fields(scanner.Text()))
 		if err != nil {
 			return err
 		}
 		gt.genes = append(gt.genes, city)
 	}
-	return err
+	return nil
 }
 
 // RandomTour creates a random tour from the search space.
@@ -278,7 +278,6 @@ func GeneticTSP(wg *sync.WaitGroup, size, offspring int, tours chan Tour, quit c
 		case tours <- p.Best():
 			p.Evolve(offspring)
 		case <-quit:
-			fmt.Println("Quit go-routine")
 			wg.Done()
 			return
 		}
